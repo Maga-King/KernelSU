@@ -14,6 +14,7 @@
 #include "ss/services.h"
 #include "linux/lsm_audit.h" // IWYU pragma: keep
 #include "xfrm.h"
+#include "feature/static_reference.h"
 
 struct selinux_policy *backup_sepolicy;
 
@@ -54,7 +55,22 @@ void apply_kernelsu_rules()
     mutex_lock(&selinux_state.policy_mutex);
 
     old_pol = rcu_dereference_protected(selinux_state.policy, lockdep_is_held(&selinux_state.policy_mutex));
+    if (!old_pol) {
+        pr_warn("SELinux policy is NULL. Skipping SELinux rules application.\n");
+        mutex_unlock(&selinux_state.policy_mutex);
+        return;
+    }
+
+#ifdef CONFIG_KSU_STATIC_SELINUX_REFERENCE
+    backup_sepolicy = ksu_static_reference_create(old_pol);
+    if (IS_ERR(backup_sepolicy)) {
+        pr_warn("static query reference unavailable (%ld), falling back to upstream backup\n",
+                PTR_ERR(backup_sepolicy));
+        backup_sepolicy = ksu_dup_sepolicy(old_pol);
+    }
+#else
     backup_sepolicy = ksu_dup_sepolicy(old_pol);
+#endif
     if (IS_ERR(backup_sepolicy)) {
         pr_err("failed to create backup sepolicy: %ld\n", PTR_ERR(backup_sepolicy));
         backup_sepolicy = NULL;
